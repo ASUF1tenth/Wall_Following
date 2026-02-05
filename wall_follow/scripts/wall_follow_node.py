@@ -57,8 +57,40 @@ class WallFollow(Node):
             error: calculated error
         """
 
-        #TODO:implement
-        return 0.0
+        # Use two rays to estimate wall angle and distance (left wall)
+        # angles measured in radians; ROS LaserScan angles increase counter-clockwise
+        # choose a = 90deg (left) and b = 45deg (front-left)
+        a = np.pi / 2.0
+        b = np.pi / 4.0
+
+        # get distances along the two rays
+        d_a = self.get_range(range_data, a)
+        d_b = self.get_range(range_data, b)
+
+        # protect against degenerate measurements
+        if d_a <= 0.0:
+            d_a = 10.0
+        if d_b <= 0.0:
+            d_b = 10.0
+
+        # phi is the angle between the two rays
+        phi = a - b
+
+        # compute orientation alpha of the wall relative to the car
+        # formula from common two-ray wall-following approach
+        denom = (d_a * np.sin(phi))
+        if abs(denom) < 1e-6:
+            alpha = 0.0
+        else:
+            alpha = np.arctan((d_a * np.cos(phi) - d_b) / denom)
+
+        # distance from car to wall perpendicular to car axis
+        distance_to_wall = d_b * np.cos(alpha)
+
+        # error: positive when we are farther than desired (need to go left),
+        # negative when we are too close (need to steer right)
+        error = dist - distance_to_wall
+        return float(error)
 
     def pid_control(self, error, velocity):
         """
