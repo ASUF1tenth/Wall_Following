@@ -18,7 +18,7 @@ class WallFollow(Node):
         drive_topic = '/drive'
 
         # TODO: create subscribers and publishers
-        self.create_subscription(LaserScan, lidarscan_topic, self.lidar_callback, 10)
+        self.create_subscription(LaserScan, lidarscan_topic, self.scan_callback, 10)
         # TODO: set PID gains
         # self.kp = 
         # self.kd = 
@@ -31,6 +31,7 @@ class WallFollow(Node):
 
         # TODO: store any necessary values you think you'll need
         self.MAX_LIDAR_DIST = 10.0  # Maximum valid LiDAR distance in meters
+        self.range_offset = 180
 
     def preprocess_lidar(self, ranges):
         """Preprocess the LiDAR scan array with smoothing.
@@ -42,50 +43,20 @@ class WallFollow(Node):
             proc_ranges: preprocessed and smoothed range array
         """
         proc_ranges = np.array(ranges)
-        
+        proc_ranges = np.array(ranges[self.range_offset:-self.range_offset])
         # Replace inf and nan values with maximum distance
         proc_ranges[np.isinf(proc_ranges)] = self.MAX_LIDAR_DIST
         proc_ranges[np.isnan(proc_ranges)] = self.MAX_LIDAR_DIST
         
         # Apply moving average filter for smoothing (window size of 5)
-        window_size = 5
+        window_size = 3
         kernel = np.ones(window_size) / window_size
-        proc_ranges = np.convolve(proc_ranges, kernel, mode='same')
+        proc_ranges = np.convolve(proc_ranges, kernel, mode='valid')
         
         # Cap maximum distance
         proc_ranges = np.clip(proc_ranges, 0, self.MAX_LIDAR_DIST)
         
         return proc_ranges
-    
-    def get_range(self, range_data, angle, preprocessed_ranges=None):
-        """
-        Simple helper to return the corresponding range measurement at a given angle. Make sure you take care of NaNs and infs.
-
-        Args:
-            range_data: single range array from the LiDAR
-            angle: between angle_min and angle_max of the LiDAR
-            preprocessed_ranges: optional preprocessed range array
-
-        Returns:
-            range: range measurement in meters at the given angle
-
-        """
-        # Calculate the index corresponding to the angle
-        index = int((angle - range_data.angle_min) / range_data.angle_increment)
-        
-        # Ensure index is within bounds
-        ranges_to_use = preprocessed_ranges if preprocessed_ranges is not None else range_data.ranges
-        if index < 0 or index >= len(ranges_to_use):
-            return 0.0
-        
-        # Get the range value
-        range_val = ranges_to_use[index]
-        
-        # Handle NaN and inf values (should already be handled if preprocessed)
-        if np.isnan(range_val) or np.isinf(range_val):
-            return self.MAX_LIDAR_DIST
-        
-        return range_val
 
     def get_error(self, range_data, dist):
         """
@@ -102,21 +73,21 @@ class WallFollow(Node):
         preprocessed_ranges = self.preprocess_lidar(range_data.ranges)
         
         # Get the angular increment (delta) from the LiDAR
-        delta = range_data.angle_increment
-        
+        delta = 0.00436332312998582
         # Choose angle θ for beam a (theta = 2 * delta in your specification)
         # You can adjust the multiplier as needed
-        theta = 2 * delta
+        theta = 20 * delta
         
         # Beam b at 90° to the right (-90° or -π/2 radians)
-        angle_b = np.radians(90.0)
+        angle_b = np.radians(-90.0)
         
         # Beam a at angle θ ahead of beam b
         angle_a = angle_b + theta
-        
+
         # Read distances from LiDAR using preprocessed data
-        b = self.get_range(range_data, angle_b, preprocessed_ranges)
-        a = self.get_range(range_data, angle_a, preprocessed_ranges)
+        b = preprocessed_ranges[0]
+        a = preprocessed_ranges[20]
+
         
         # Compute the wall angle α
         alpha = np.arctan((a * np.cos(theta) - b) / (a * np.sin(theta)))
@@ -132,8 +103,9 @@ class WallFollow(Node):
         
         # Compute the error (dist is the desired distance)
         error = dist - D_future
-        
+        self.get_logger().info(f"{a},{b},{error}")
         return error
+        
 
     def pid_control(self, error, velocity):
         """
@@ -161,8 +133,11 @@ class WallFollow(Node):
         Returns:
             None
         """
+        preprocessed_ranges = self.preprocess_lidar(msg.ranges)
+    
+        width = preprocessed_ranges[0] + preprocessed_ranges[len(preprocessed_ranges)-1]
         # Set desired distance to wall
-        desired_distance = 1.0  # meters
+        desired_distance = width/2  # meters
         
         # Calculate error using get_error with msg (which contains angle_increment, ranges, etc.)
         error = self.get_error(msg, desired_distance)
