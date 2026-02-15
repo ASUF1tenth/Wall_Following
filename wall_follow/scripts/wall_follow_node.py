@@ -4,8 +4,6 @@ from rclpy.node import Node
 import numpy as np
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped
-#perception
-#
 
 class WallFollow(Node):
     """ 
@@ -17,17 +15,19 @@ class WallFollow(Node):
         lidarscan_topic = '/scan'
         drive_topic = '/drive'
 
-        # TODO: create subscribers and publishers
+        # create subscribers and publishers
         self.create_subscription(LaserScan, lidarscan_topic, self.scan_callback, 10)
-        # TODO: set PID gains
-        # self.kp = 
-        # self.kd = 
-        # self.ki = 
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
 
-        # TODO: store history
+        # set PID gains
+        self.kp = 0.8
+        self.kd = 0.15
+        # self.ki = 0
+
+        # store history
         # self.integral = 
-        # self.prev_error = 
-        # self.error = 
+        self.prev_error = 0.0
+        self.error = 0.0
 
         # TODO: store any necessary values you think you'll need
         self.MAX_LIDAR_DIST = 10.0  # Maximum valid LiDAR distance in meters
@@ -69,9 +69,6 @@ class WallFollow(Node):
         Returns:
             error: calculated error
         """
-        # Preprocess LiDAR data for smoothing
-        preprocessed_ranges = self.preprocess_lidar(range_data.ranges)
-        
         # Get the angular increment (delta) from the LiDAR
         delta = 0.00436332312998582
         # Choose angle θ for beam a (theta = 2 * delta in your specification)
@@ -85,8 +82,8 @@ class WallFollow(Node):
         angle_a = angle_b + theta
 
         # Read distances from LiDAR using preprocessed data
-        b = preprocessed_ranges[0]
-        a = preprocessed_ranges[20]
+        b = range_data[0]
+        a = range_data[20]
 
         
         # Compute the wall angle α
@@ -102,26 +99,36 @@ class WallFollow(Node):
         D_future = Dt + L * np.sin(alpha)
         
         # Compute the error (dist is the desired distance)
+        self.prev_error = self.error
         error = dist - D_future
+        self.error = error
         self.get_logger().info(f"{a},{b},{error}")
         return error
-        
 
-    def pid_control(self, error, velocity):
+    def get_speed(self, steering_angle):
+        # ===== Speed Control =====
+        if abs(steering_angle) > 0.4:
+            speed = 1.0
+        elif abs(steering_angle) > 0.2:
+            speed = 2.0
+        else:
+            speed = 3.0
+        return speed
+
+    def pid_control(self, error):
         """
         Based on the calculated error, publish vehicle control
 
         Args:
             error: calculated error
-            velocity: desired velocity
 
         Returns:
             None
         """
-        angle = 0.0
-        # TODO: Use kp, ki & kd to implement a PID controller
-        drive_msg = AckermannDriveStamped()
-        # TODO: fill in drive message and publish
+        # Use kp, ki & kd to implement a PID controller
+        steering_angle =  self.kp * error + self.kd * (error - self.prev_error)
+
+        return steering_angle
 
     def scan_callback(self, msg):
         """
@@ -133,17 +140,28 @@ class WallFollow(Node):
         Returns:
             None
         """
+
+        # preprocess lidar ranges
         preprocessed_ranges = self.preprocess_lidar(msg.ranges)
     
-        width = preprocessed_ranges[0] + preprocessed_ranges[len(preprocessed_ranges)-1]
         # Set desired distance to wall
+        width = preprocessed_ranges[0] + preprocessed_ranges[len(preprocessed_ranges)-1]
         desired_distance = width/2  # meters
         
-        # Calculate error using get_error with msg (which contains angle_increment, ranges, etc.)
-        error = self.get_error(msg, desired_distance)
+        # Calculate error using get_error with preprocessed_ranges and desired_distance
+        error = self.get_error(preprocessed_ranges, desired_distance)
         
-        velocity = 0.0 # TODO: calculate desired car velocity based on error
-        self.pid_control(error, velocity) # TODO: actuate the car with PID
+        # calculate steering angle with PID
+        steering_angle = self.pid_control(error)
+
+        # calculate desired car velocity based on steering angle
+        speed = self.get_speed(steering_angle)
+
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.steering_angle = steering_angle
+        drive_msg.drive.speed = speed
+
+        self.drive_pub.publish(drive_msg)
 
 
 def main(args=None):
